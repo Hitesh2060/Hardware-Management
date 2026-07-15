@@ -1,0 +1,583 @@
+// ============================================================================
+// Hardware Shop Inventory Management System — Prisma Schema (PostgreSQL)
+// ----------------------------------------------------------------------------
+// Design principles:
+//  - Stock is NEVER stored/edited directly on Product. It is always derived
+//    from StockMovement (immutable ledger). See src/modules/stock/*.
+//  - Every money-relevant table stores amounts as Decimal(12,2) — never Float.
+//  - Soft-delete via `isActive` on master data so history/reports never break.
+//  - Every mutating table that affects money or stock is written inside a
+//    DB transaction from the service layer (see stock.service.js, sales, etc).
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// AUTH / RBAC
+// ---------------------------------------------------------------------------
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String           @unique // e.g. ADMIN, MANAGER, CASHIER, STOCK_KEEPER
+  description String?
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  permissions RolePermission[]
+  users       User[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  code        String           @unique // e.g. "product.create", "sale.void"
+  module      String           // e.g. "product", "sale"
+  description String?
+
+  roles       RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(uuid())
+  roleId       String
+  permissionId String
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model User {
+  id                String    @id @default(uuid())
+  name              String
+  email             String    @unique
+  phone             String?
+  passwordHash      String
+  roleId            String
+  isActive          Boolean   @default(true)
+  isEmailVerified   Boolean   @default(false)
+  emailVerifyToken  String?
+  resetToken        String?
+  resetTokenExpiry  DateTime?
+  refreshTokenHash  String?   // hashed, for refresh-token rotation
+  lastLoginAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  role              Role            @relation(fields: [roleId], references: [id])
+  purchases         Purchase[]      @relation("PurchaseCreatedBy")
+  sales             Sale[]          @relation("SaleCreatedBy")
+  stockMovements    StockMovement[] @relation("StockMovementCreatedBy")
+  stockAdjustments  StockAdjustment[] @relation("AdjustmentCreatedBy")
+  activityLogs      ActivityLog[]
+  notifications     Notification[]
+
+  @@index([roleId])
+  @@map("users")
+}
+
+// ---------------------------------------------------------------------------
+// CATALOG / MASTER DATA
+// ---------------------------------------------------------------------------
+
+model Category {
+  id        String     @id @default(uuid())
+  name      String     @unique
+  parentId  String?
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryTree")
+  products  Product[]
+
+  @@map("categories")
+}
+
+model Brand {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  isActive  Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  products  Product[]
+
+  @@map("brands")
+}
+
+model Unit {
+  id         String    @id @default(uuid())
+  name       String    @unique // "Piece", "Box", "Kg", "Meter"
+  shortCode  String    @unique // "pc", "box", "kg", "m"
+  isActive   Boolean   @default(true)
+
+  products   Product[]
+
+  @@map("units")
+}
+
+model Product {
+  id              String   @id @default(uuid())
+  sku             String   @unique
+  barcode         String?  @unique
+  name            String
+  description     String?
+  categoryId      String
+  brandId         String?
+  unitId          String
+  costPrice       Decimal  @db.Decimal(12, 2) // last/avg purchase cost, informational
+  sellingPrice    Decimal  @db.Decimal(12, 2)
+  taxPercent      Decimal  @db.Decimal(5, 2) @default(0)
+  reorderLevel    Int      @default(0) // triggers "low stock"
+  imageUrl        String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  category        Category @relation(fields: [categoryId], references: [id])
+  brand           Brand?   @relation(fields: [brandId], references: [id])
+  unit            Unit     @relation(fields: [unitId], references: [id])
+
+  purchaseItems   PurchaseItem[]
+  saleItems       SaleItem[]
+  stockMovements  StockMovement[]
+  damageItems     DamageItem[]
+  stockAdjustments StockAdjustment[]
+
+  // NOTE: current on-hand qty is NEVER a column here.
+  // It is always SUM(StockMovement.quantity) for this product. See stock.service.js
+
+  @@index([categoryId])
+  @@index([brandId])
+  @@index([name])
+  @@map("products")
+}
+
+// ---------------------------------------------------------------------------
+// PARTIES
+// ---------------------------------------------------------------------------
+
+model Supplier {
+  id            String     @id @default(uuid())
+  name          String
+  phone         String?
+  email         String?
+  address       String?
+  openingBalance Decimal   @db.Decimal(12, 2) @default(0) // payable to supplier
+  isActive      Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  purchases     Purchase[]
+  payments      Payment[]
+
+  @@index([name])
+  @@map("suppliers")
+}
+
+model Customer {
+  id             String    @id @default(uuid())
+  name           String
+  phone          String?
+  email          String?
+  address        String?
+  creditLimit    Decimal   @db.Decimal(12, 2) @default(0)
+  openingBalance Decimal   @db.Decimal(12, 2) @default(0) // receivable from customer
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  sales          Sale[]
+  payments       Payment[]
+
+  @@index([name])
+  @@map("customers")
+}
+
+// ---------------------------------------------------------------------------
+// PURCHASES
+// ---------------------------------------------------------------------------
+
+enum PurchaseStatus {
+  DRAFT
+  RECEIVED
+  CANCELLED
+}
+
+model Purchase {
+  id             String         @id @default(uuid())
+  invoiceNo      String         @unique // internal, auto-generated e.g. PUR-2026-000001
+  supplierId     String
+  purchaseDate   DateTime       @default(now())
+  subTotal       Decimal        @db.Decimal(12, 2)
+  discountAmount Decimal        @db.Decimal(12, 2) @default(0)
+  taxAmount      Decimal        @db.Decimal(12, 2) @default(0)
+  transportCharge Decimal       @db.Decimal(12, 2) @default(0)
+  totalAmount    Decimal        @db.Decimal(12, 2)
+  paidAmount     Decimal        @db.Decimal(12, 2) @default(0)
+  dueAmount      Decimal        @db.Decimal(12, 2) @default(0)
+  status         PurchaseStatus @default(RECEIVED)
+  notes          String?
+  createdById    String
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  supplier       Supplier       @relation(fields: [supplierId], references: [id])
+  createdBy      User           @relation("PurchaseCreatedBy", fields: [createdById], references: [id])
+  items          PurchaseItem[]
+  payments       Payment[]
+  stockMovements StockMovement[]
+
+  @@index([supplierId])
+  @@index([purchaseDate])
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id             String   @id @default(uuid())
+  purchaseId     String
+  productId      String
+  quantity       Decimal  @db.Decimal(12, 3)
+  unitCost       Decimal  @db.Decimal(12, 2)
+  discountAmount Decimal  @db.Decimal(12, 2) @default(0)
+  taxAmount      Decimal  @db.Decimal(12, 2) @default(0)
+  lineTotal      Decimal  @db.Decimal(12, 2)
+
+  purchase       Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  product        Product  @relation(fields: [productId], references: [id])
+
+  @@index([purchaseId])
+  @@index([productId])
+  @@map("purchase_items")
+}
+
+// ---------------------------------------------------------------------------
+// SALES
+// ---------------------------------------------------------------------------
+
+enum SaleStatus {
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentMode {
+  CASH
+  CREDIT
+  PARTIAL
+  CARD
+  BANK_TRANSFER
+  MOBILE_WALLET
+}
+
+model Sale {
+  id              String       @id @default(uuid())
+  invoiceNo       String       @unique // e.g. INV-2026-000001
+  customerId      String?
+  saleDate        DateTime     @default(now())
+  subTotal        Decimal      @db.Decimal(12, 2)
+  discountAmount  Decimal      @db.Decimal(12, 2) @default(0)
+  taxAmount       Decimal      @db.Decimal(12, 2) @default(0)
+  totalAmount     Decimal      @db.Decimal(12, 2)
+  paidAmount      Decimal      @db.Decimal(12, 2) @default(0)
+  dueAmount       Decimal      @db.Decimal(12, 2) @default(0)
+  paymentMode     PaymentMode  @default(CASH)
+  status          SaleStatus   @default(COMPLETED)
+  notes           String?
+  createdById     String
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  customer        Customer?    @relation(fields: [customerId], references: [id])
+  createdBy       User         @relation("SaleCreatedBy", fields: [createdById], references: [id])
+  items           SaleItem[]
+  payments        Payment[]
+  returns         Return[]
+  stockMovements  StockMovement[]
+  delivery        Delivery?
+
+  @@index([customerId])
+  @@index([saleDate])
+  @@map("sales")
+}
+
+model SaleItem {
+  id             String   @id @default(uuid())
+  saleId         String
+  productId      String
+  quantity       Decimal  @db.Decimal(12, 3)
+  unitPrice      Decimal  @db.Decimal(12, 2)
+  discountAmount Decimal  @db.Decimal(12, 2) @default(0)
+  taxAmount      Decimal  @db.Decimal(12, 2) @default(0)
+  lineTotal      Decimal  @db.Decimal(12, 2)
+
+  sale           Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product        Product  @relation(fields: [productId], references: [id])
+
+  @@index([saleId])
+  @@index([productId])
+  @@map("sale_items")
+}
+
+// ---------------------------------------------------------------------------
+// RETURNS / DAMAGE / ADJUSTMENTS
+// ---------------------------------------------------------------------------
+
+enum ReturnType {
+  CUSTOMER_RETURN // customer brings goods back -> stock IN
+  SUPPLIER_RETURN // we send goods back to supplier -> stock OUT
+}
+
+model Return {
+  id           String     @id @default(uuid())
+  type         ReturnType
+  saleId       String?    // set when CUSTOMER_RETURN
+  purchaseId   String?    // set when SUPPLIER_RETURN
+  productId    String
+  quantity     Decimal    @db.Decimal(12, 3)
+  unitPrice    Decimal    @db.Decimal(12, 2)
+  totalAmount  Decimal    @db.Decimal(12, 2)
+  reason       String?
+  createdAt    DateTime   @default(now())
+
+  sale         Sale?      @relation(fields: [saleId], references: [id])
+  stockMovements StockMovement[]
+
+  @@index([saleId])
+  @@index([purchaseId])
+  @@map("returns")
+}
+
+model DamageItem {
+  id          String   @id @default(uuid())
+  productId   String
+  quantity    Decimal  @db.Decimal(12, 3)
+  unitCost    Decimal  @db.Decimal(12, 2)
+  totalLoss   Decimal  @db.Decimal(12, 2)
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  product     Product  @relation(fields: [productId], references: [id])
+  stockMovements StockMovement[]
+
+  @@index([productId])
+  @@map("damage_items")
+}
+
+enum AdjustmentType {
+  INCREASE
+  DECREASE
+}
+
+model StockAdjustment {
+  id           String         @id @default(uuid())
+  productId    String
+  type         AdjustmentType
+  quantity     Decimal        @db.Decimal(12, 3)
+  reason       String         // required — never a silent edit
+  createdById  String
+  createdAt    DateTime       @default(now())
+
+  product      Product        @relation(fields: [productId], references: [id])
+  createdBy    User           @relation("AdjustmentCreatedBy", fields: [createdById], references: [id])
+  stockMovements StockMovement[]
+
+  @@index([productId])
+  @@map("stock_adjustments")
+}
+
+// ---------------------------------------------------------------------------
+// STOCK MOVEMENT — the single source of truth for on-hand quantity
+// ---------------------------------------------------------------------------
+
+enum StockMovementType {
+  OPENING
+  PURCHASE
+  SALE
+  CUSTOMER_RETURN
+  SUPPLIER_RETURN
+  DAMAGE
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  TRANSFER_IN
+  TRANSFER_OUT
+  CANCELLATION_REVERSAL
+}
+
+model StockMovement {
+  id                String            @id @default(uuid())
+  productId         String
+  type              StockMovementType
+  quantity          Decimal           @db.Decimal(12, 3) // ALWAYS signed: +in, -out
+  balanceAfter      Decimal           @db.Decimal(12, 3) // running balance snapshot for fast reads/audits
+  referenceType     String            // "Purchase" | "Sale" | "Return" | "Damage" | "StockAdjustment" | "Opening"
+  referenceId       String            // id of the source document
+  purchaseId        String?
+  saleId            String?
+  returnId          String?
+  damageItemId      String?
+  stockAdjustmentId String?
+  note              String?
+  createdById       String
+  createdAt         DateTime          @default(now())
+
+  product           Product           @relation(fields: [productId], references: [id])
+  createdBy         User              @relation("StockMovementCreatedBy", fields: [createdById], references: [id])
+  purchase          Purchase?         @relation(fields: [purchaseId], references: [id])
+  sale              Sale?             @relation(fields: [saleId], references: [id])
+  return            Return?           @relation(fields: [returnId], references: [id])
+  damageItem        DamageItem?       @relation(fields: [damageItemId], references: [id])
+  stockAdjustment   StockAdjustment?  @relation(fields: [stockAdjustmentId], references: [id])
+
+  @@index([productId, createdAt])
+  @@index([referenceType, referenceId])
+  @@map("stock_movements")
+}
+
+// ---------------------------------------------------------------------------
+// FINANCE
+// ---------------------------------------------------------------------------
+
+model Expense {
+  id          String   @id @default(uuid())
+  category    String   // "Rent", "Utility", "Salary", "Transport" ...
+  amount      Decimal  @db.Decimal(12, 2)
+  expenseDate DateTime @default(now())
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([expenseDate])
+  @@map("expenses")
+}
+
+enum PaymentDirection {
+  IN  // money received (from customer, or into cash)
+  OUT // money paid (to supplier)
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  BANK_TRANSFER
+  MOBILE_WALLET
+  CHEQUE
+}
+
+model Payment {
+  id          String           @id @default(uuid())
+  direction   PaymentDirection
+  method      PaymentMethod
+  amount      Decimal          @db.Decimal(12, 2)
+  saleId      String?
+  purchaseId  String?
+  supplierId  String?
+  customerId  String?
+  note        String?
+  paidAt      DateTime         @default(now())
+  createdAt   DateTime         @default(now())
+
+  sale        Sale?            @relation(fields: [saleId], references: [id])
+  purchase    Purchase?        @relation(fields: [purchaseId], references: [id])
+  supplier    Supplier?        @relation(fields: [supplierId], references: [id])
+  customer    Customer?        @relation(fields: [customerId], references: [id])
+
+  @@index([saleId])
+  @@index([purchaseId])
+  @@index([supplierId])
+  @@index([customerId])
+  @@map("payments")
+}
+
+// ---------------------------------------------------------------------------
+// NOTIFICATIONS
+// ---------------------------------------------------------------------------
+
+enum NotificationType {
+  LOW_STOCK
+  OUT_OF_STOCK
+  CREDIT_DUE
+  PAYMENT_RECEIVED
+  PURCHASE_RECEIVED
+  SYSTEM
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String?          // null = broadcast to all ADMIN users (e.g. system-wide low stock alert)
+  type      NotificationType
+  title     String
+  message   String
+  isRead    Boolean          @default(false)
+  metadata  Json?
+  createdAt DateTime         @default(now())
+
+  user      User?            @relation(fields: [userId], references: [id])
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+// ---------------------------------------------------------------------------
+// DELIVERY (goods-out tracking for a completed Sale)
+// ---------------------------------------------------------------------------
+
+enum DeliveryStatus {
+  PENDING
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED
+}
+
+model Delivery {
+  id            String         @id @default(uuid())
+  saleId        String         @unique
+  driverName    String?
+  vehicleNo     String?
+  address       String
+  status        DeliveryStatus @default(PENDING)
+  scheduledDate DateTime?
+  deliveredAt   DateTime?
+  notes         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  sale          Sale           @relation(fields: [saleId], references: [id])
+
+  @@map("deliveries")
+}
+
+// ---------------------------------------------------------------------------
+// AUDIT
+// ---------------------------------------------------------------------------
+
+model ActivityLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String   // "CREATE" | "UPDATE" | "DELETE" | "LOGIN" | "VOID" ...
+  module     String   // "Product" | "Sale" | "Purchase" ...
+  entityId   String?
+  ipAddress  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id])
+
+  @@index([module, createdAt])
+  @@index([userId])
+  @@map("activity_logs")
+}

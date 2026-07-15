@@ -1,0 +1,26 @@
+node_modules/
+.env
+.env.local
+
+# Uploaded files (keep folder structure, not content)
+uploads/products/*
+uploads/invoices/*
+uploads/profiles/*
+uploads/temp/*
+!uploads/**/.gitkeep
+
+# Logs
+logs/*.log
+!logs/.gitkeep
+
+# Prisma
+prisma/migrations/dev.db
+
+# Build artifacts
+dist/
+build/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
