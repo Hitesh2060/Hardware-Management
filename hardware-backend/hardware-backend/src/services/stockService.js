@@ -39,9 +39,32 @@ export async function getCurrentStock(tx, productId) {
  * StockMovement — every module (purchase, sale, return, damage, adjustment)
  * calls this instead of touching the table directly.
  */
-async function recordMovement(tx, { productId, type, quantitySigned, reference, createdById, note }) {
+// Find this function in your stockService.js and update it
+async function recordMovement(tx, { 
+  productId, 
+  type, 
+  quantitySigned, 
+  unitCost, 
+  totalValue,
+  reference, 
+  createdById, 
+  note 
+}) {
   const currentBalance = await getCurrentStock(tx, productId);
   const balanceAfter = Number(currentBalance) + Number(quantitySigned);
+
+  // If unitCost or totalValue not provided, calculate from product
+  let finalUnitCost = unitCost;
+  let finalTotalValue = totalValue;
+  
+  if (!finalUnitCost) {
+    const product = await tx.product.findUnique({
+      where: { id: productId },
+      select: { costPrice: true },
+    });
+    finalUnitCost = product ? Number(product.costPrice) : 0;
+    finalTotalValue = quantitySigned * finalUnitCost;
+  }
 
   return tx.stockMovement.create({
     data: {
@@ -49,6 +72,8 @@ async function recordMovement(tx, { productId, type, quantitySigned, reference, 
       type,
       quantity: quantitySigned,
       balanceAfter,
+      unitCost: finalUnitCost,
+      totalValue: finalTotalValue,
       referenceType: reference.type,
       referenceId: reference.id,
       purchaseId: reference.type === 'Purchase' ? reference.id : undefined,

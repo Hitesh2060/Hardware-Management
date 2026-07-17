@@ -19,3 +19,9 @@ export const listPayments = asyncHandler(async (req, res) => {
   const result = await paymentService.listPayments(req.query);
   res.status(200).json(new ApiResponse(200, result));
 });
+
+export const getPayment = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const payment = await paymentService.getPayment(id);
+  res.status(200).json(new ApiResponse(200, payment, 'Payment retrieved'));
+});

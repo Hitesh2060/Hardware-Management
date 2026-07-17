@@ -10,6 +10,7 @@ import {
   BarChart3,
   Boxes,
   Settings,
+  DollarSign,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -23,6 +24,7 @@ const NAV_ITEMS = [
   { to: '/payments', label: 'Payments & Credit', icon: Wallet },
   { to: '/reports', label: 'Reports', icon: Receipt },
   { to: '/analytics', label: 'Analytics', icon: BarChart3 },
+  { to: '/financial-reports', label: 'Financial Reports', icon: DollarSign },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
 

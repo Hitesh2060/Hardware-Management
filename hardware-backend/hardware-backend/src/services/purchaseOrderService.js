@@ -2,6 +2,7 @@ import prisma from '../config/database.js';
 import ApiError from '../utils/ApiError.js';
 import { applyPurchaseStock, applyCancellationReversal } from './stockService.js';
 import { generateDocumentNumber } from '../utils/generateInvoiceNo.js';
+import { recordSupplierLedger } from './ledgerService.js'; // ✅ ADD THIS IMPORT
 
 export async function createPurchase(payload, userId) {
   const { supplierId, items, discountAmount, transportCharge, paidAmount, notes, status = 'DRAFT' } = payload;
@@ -67,6 +68,21 @@ export async function createPurchase(payload, userId) {
         });
       }
 
+      // ✅ RECORD SUPPLIER LEDGER ENTRY FOR PURCHASE
+      await recordSupplierLedger({
+        supplierId: supplierId,
+        transactionType: 'PURCHASE',
+        date: purchase.purchaseDate,
+        purchaseId: purchase.id,
+        paymentId: null,
+        returnId: null,
+        debit: Number(purchase.totalAmount),
+        credit: 0,
+        referenceNo: purchase.invoiceNo,
+        note: `Purchase #${purchase.invoiceNo}`,
+        createdBy: userId,
+      });
+
       if (paidAmount > 0) {
         await tx.payment.create({
           data: {
@@ -108,6 +124,21 @@ export async function receivePurchase(id, userId) {
         createdById: userId,
       });
     }
+
+    // ✅ RECORD SUPPLIER LEDGER ENTRY FOR PURCHASE (when receiving draft)
+    await recordSupplierLedger({
+      supplierId: purchase.supplierId,
+      transactionType: 'PURCHASE',
+      date: purchase.purchaseDate,
+      purchaseId: purchase.id,
+      paymentId: null,
+      returnId: null,
+      debit: Number(purchase.totalAmount),
+      credit: 0,
+      referenceNo: purchase.invoiceNo,
+      note: `Purchase #${purchase.invoiceNo} (received from draft)`,
+      createdBy: userId,
+    });
 
     // Create payment record if any amount was paid
     if (purchase.paidAmount > 0) {

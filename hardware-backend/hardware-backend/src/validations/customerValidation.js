@@ -2,12 +2,18 @@ import { z } from 'zod';
 
 export const createCustomerSchema = z.object({
   body: z.object({
-    name: z.string().min(2),
-    phone: z.string().optional(),
-    email: z.string().email().optional(),
-    address: z.string().optional(),
-    creditLimit: z.number().nonnegative().default(0),
-    openingBalance: z.number().nonnegative().default(0),
+    name: z.string().min(2, 'Name must be at least 2 characters'),
+    phone: z.string().optional().nullable(),
+    email: z.string().email('Invalid email').optional().nullable(),
+    address: z.string().optional().nullable(),
+    creditLimit: z.union([
+      z.number().nonnegative().default(0),
+      z.string().transform((val) => parseFloat(val) || 0),
+    ]).default(0),
+    openingBalance: z.union([
+      z.number().nonnegative().default(0),
+      z.string().transform((val) => parseFloat(val) || 0),
+    ]).default(0),
   }),
 });
 

@@ -17,7 +17,8 @@ import { ReportsPage } from '@/pages/ReportsPage';
 import { AnalyticsPage } from '@/pages/AnalyticsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
-import { InvoicePage } from '@/pages/InvoicePage';  // ← Add this import
+import { InvoicePage } from '@/pages/InvoicePage';  
+import { FinancialReportsPage } from '@/pages/FinancialReportPage';
 
 export default function App() {
   return (
@@ -46,6 +47,7 @@ export default function App() {
               <Route path="/reports" element={<ReportsPage />} />
               <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/financial-reports" element={<FinancialReportsPage />} />
             </Route>
 
             <Route path="*" element={<NotFoundPage />} />

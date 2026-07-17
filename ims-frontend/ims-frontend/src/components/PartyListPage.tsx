@@ -66,7 +66,7 @@ export function PartyListPage<T extends PartyBase>({
     } finally {
       setLoading(false);
     }
-  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [search]);
 
   useEffect(() => {
     const t = setTimeout(load, 300);
@@ -75,11 +75,15 @@ export function PartyListPage<T extends PartyBase>({
 
   async function onSubmit(data: PartyForm) {
     try {
-      await api.create({
-        ...data,
-        creditLimit: data.creditLimit ? Number(data.creditLimit) : undefined,
-        openingBalance: data.openingBalance ? Number(data.openingBalance) : undefined,
-      });
+      const cleanData = {
+        name: data.name,
+        phone: data.phone || null,
+        email: data.email || null,
+        address: data.address || null,
+        creditLimit: data.creditLimit ? Number(data.creditLimit) : 0,
+        openingBalance: data.openingBalance ? Number(data.openingBalance) : 0,
+      };
+      await api.create(cleanData);
       toast.success(`${title.slice(0, -1)} created`);
       setDialogOpen(false);
       reset();
@@ -107,32 +111,42 @@ export function PartyListPage<T extends PartyBase>({
             <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
               <div className="space-y-1.5">
                 <Label>Name</Label>
-                <Input {...register('name', { required: true })} />
+                <Input {...register('name', { required: true })} placeholder="Enter name" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label>Phone</Label>
-                  <Input {...register('phone')} />
+                  <Input {...register('phone')} placeholder="Phone number" />
                 </div>
                 <div className="space-y-1.5">
                   <Label>Email</Label>
-                  <Input type="email" {...register('email')} />
+                  <Input type="email" {...register('email')} placeholder="Email address" />
                 </div>
               </div>
               <div className="space-y-1.5">
                 <Label>Address</Label>
-                <Input {...register('address')} />
+                <Input {...register('address')} placeholder="Address" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 {showCreditLimit && (
                   <div className="space-y-1.5">
                     <Label>Credit Limit</Label>
-                    <Input type="number" step="0.01" {...register('creditLimit')} />
+                    <Input 
+                      type="number" 
+                      step="0.01" 
+                      {...register('creditLimit')} 
+                      placeholder="0.00"
+                    />
                   </div>
                 )}
                 <div className="space-y-1.5">
                   <Label>Opening Balance</Label>
-                  <Input type="number" step="0.01" {...register('openingBalance')} />
+                  <Input 
+                    type="number" 
+                    step="0.01" 
+                    {...register('openingBalance')} 
+                    placeholder="0.00"
+                  />
                 </div>
               </div>
               <DialogFooter>
@@ -148,7 +162,12 @@ export function PartyListPage<T extends PartyBase>({
 
       <div className="relative max-w-sm">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-ink-muted)]" />
-        <Input placeholder="Search by name..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-8" />
+        <Input 
+          placeholder="Search by name..." 
+          value={search} 
+          onChange={(e) => setSearch(e.target.value)} 
+          className="pl-8" 
+        />
       </div>
 
       <Table>
@@ -177,7 +196,11 @@ export function PartyListPage<T extends PartyBase>({
             </TableRow>
           )}
           {parties.map((party) => (
-            <TableRow key={party.id}>
+            <TableRow 
+              key={party.id}
+              className="cursor-pointer hover:bg-[var(--color-muted)]"
+              onClick={() => showLedger && onViewLedger?.(party)}
+            >
               <TableCell className="font-medium">{party.name}</TableCell>
               <TableCell>{party.phone || '—'}</TableCell>
               <TableCell>{party.email || '—'}</TableCell>
@@ -190,7 +213,7 @@ export function PartyListPage<T extends PartyBase>({
                   <span className="text-[var(--color-ink-muted)]">Rs. 0.00</span>
                 )}
               </TableCell>
-              <TableCell className="text-center">
+              <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
                 <div className="flex items-center justify-center gap-1">
                   {showLedger && onViewLedger && (
                     <Button

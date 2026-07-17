@@ -22,12 +22,9 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@
 import type { Product, Category, Unit, Supplier } from '@/types';
 
 interface ProductForm {
-  sku: string;
   name: string;
   categoryId: string;
   unitId: string;
-  costPrice: number;
-  sellingPrice: number;
   openingStock: number;
 }
 

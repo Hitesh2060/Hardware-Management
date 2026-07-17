@@ -2,7 +2,17 @@ import prisma from '../config/database.js';
 import ApiError from '../utils/ApiError.js';
 
 export async function createCustomer(data) {
-  return prisma.customer.create({ data });
+  // Ensure numeric fields are properly parsed
+  const cleanData = {
+    name: data.name,
+    phone: data.phone || null,
+    email: data.email || null,
+    address: data.address || null,
+    creditLimit: data.creditLimit ? Number(data.creditLimit) : 0,
+    openingBalance: data.openingBalance ? Number(data.openingBalance) : 0,
+  };
+  
+  return prisma.customer.create({ data: cleanData });
 }
 
 export async function listCustomers({ page = 1, limit = 20, search }) {
@@ -51,7 +61,15 @@ export async function getCustomer(id) {
 export async function updateCustomer(id, data) {
   const existing = await prisma.customer.findUnique({ where: { id } });
   if (!existing) throw ApiError.notFound('Customer not found');
-  return prisma.customer.update({ where: { id }, data });
+  
+  // Ensure numeric fields are properly parsed
+  const cleanData = {
+    ...data,
+    creditLimit: data.creditLimit ? Number(data.creditLimit) : undefined,
+    openingBalance: data.openingBalance ? Number(data.openingBalance) : undefined,
+  };
+  
+  return prisma.customer.update({ where: { id }, data: cleanData });
 }
 
 export async function deactivateCustomer(id) {

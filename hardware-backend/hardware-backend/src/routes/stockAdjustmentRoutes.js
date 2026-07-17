@@ -1,16 +1,48 @@
 import { Router } from 'express';
 import * as controller from '../controllers/stockAdjustmentController.js';
-import { validate } from '../middleware/validate.js';
 import { authenticate } from '../middleware/auth.js';
 import { requirePermission } from '../middleware/roleCheck.js';
-import { createStockAdjustmentSchema, listStockAdjustmentsSchema } from '../validations/stockAdjustmentValidation.js';
+import { validate } from '../middleware/validate.js';
+import { 
+  createStockAdjustmentSchema,
+  listStockAdjustmentsSchema,
+  adjustmentReportSchema,
+  financialSummarySchema
+} from '../validations/stockAdjustmentValidation.js';
 
 const router = Router();
 router.use(authenticate);
 
-router.get('/', validate(listStockAdjustmentsSchema), requirePermission('product.view'), controller.listStockAdjustments);
-// Deliberately restricted to a narrower permission than product.update — physical stock
-// corrections are a bigger deal than editing a description or price.
-router.post('/', validate(createStockAdjustmentSchema), requirePermission('stock.adjust'), controller.createStockAdjustment);
+// Create adjustment with financial tracking
+router.post(
+  '/',
+  validate(createStockAdjustmentSchema),
+  requirePermission('stock.adjust'),
+  controller.createStockAdjustment
+);
+
+// List all adjustments (with pagination)
+router.get(
+  '/',
+  validate(listStockAdjustmentsSchema),
+  requirePermission('stock.adjust'),
+  controller.listStockAdjustments
+);
+
+// Get adjustments with financial report
+router.get(
+  '/report',
+  validate(adjustmentReportSchema),
+  requirePermission('stock.adjust'),
+  controller.getAdjustmentReport
+);
+
+// Get financial summary
+router.get(
+  '/financial-summary',
+  validate(financialSummarySchema),
+  requirePermission('stock.adjust'),
+  controller.getFinancialSummary
+);
 
 export default router;

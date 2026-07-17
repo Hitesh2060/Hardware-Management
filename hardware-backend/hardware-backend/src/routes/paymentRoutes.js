@@ -13,6 +13,7 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/', validate(listPaymentsSchema), requirePermission('payment.view'), controller.listPayments);
+router.get('/:id', requirePermission('payment.view'), controller.getPayment);
 router.post(
   '/customer',
   validate(recordCustomerPaymentSchema),

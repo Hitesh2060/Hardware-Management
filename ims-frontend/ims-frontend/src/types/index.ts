@@ -175,6 +175,7 @@ export interface SupplierLedgerEntry {
   credit: number;
   balance: number;
   note: string;
+  
 }
 
 export interface SupplierLedger {

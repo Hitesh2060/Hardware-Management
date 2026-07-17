@@ -25,9 +25,6 @@ CREATE TYPE "PaymentMethod" AS ENUM ('CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_WA
 -- CreateEnum
 CREATE TYPE "NotificationType" AS ENUM ('LOW_STOCK', 'OUT_OF_STOCK', 'CREDIT_DUE', 'PAYMENT_RECEIVED', 'PURCHASE_RECEIVED', 'SYSTEM');
 
--- CreateEnum
-CREATE TYPE "DeliveryStatus" AS ENUM ('PENDING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'FAILED');
-
 -- CreateTable
 CREATE TABLE "roles" (
     "id" TEXT NOT NULL,
@@ -273,6 +270,9 @@ CREATE TABLE "stock_adjustments" (
     "productId" TEXT NOT NULL,
     "type" "AdjustmentType" NOT NULL,
     "quantity" DECIMAL(12,3) NOT NULL,
+    "unitCost" DECIMAL(12,2) NOT NULL,
+    "totalValue" DECIMAL(12,2) NOT NULL,
+    "financialImpact" DECIMAL(12,2) NOT NULL,
     "reason" TEXT NOT NULL,
     "createdById" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -287,6 +287,8 @@ CREATE TABLE "stock_movements" (
     "type" "StockMovementType" NOT NULL,
     "quantity" DECIMAL(12,3) NOT NULL,
     "balanceAfter" DECIMAL(12,3) NOT NULL,
+    "unitCost" DECIMAL(12,2),
+    "totalValue" DECIMAL(12,2),
     "referenceType" TEXT NOT NULL,
     "referenceId" TEXT NOT NULL,
     "purchaseId" TEXT,
@@ -299,6 +301,35 @@ CREATE TABLE "stock_movements" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "stock_movements_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "financial_summaries" (
+    "id" TEXT NOT NULL,
+    "month" INTEGER NOT NULL,
+    "year" INTEGER NOT NULL,
+    "startDate" TIMESTAMP(3) NOT NULL,
+    "endDate" TIMESTAMP(3) NOT NULL,
+    "openingInventoryValue" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "closingInventoryValue" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "totalPurchases" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "totalSales" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "totalSalesTax" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "totalSalesDiscount" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "totalAdjustmentLoss" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "totalAdjustmentGain" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "netAdjustmentImpact" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "cogs" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "grossProfit" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "netProfit" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "totalExpenses" DECIMAL(12,2) NOT NULL DEFAULT 0,
+    "totalProducts" INTEGER NOT NULL DEFAULT 0,
+    "totalCustomers" INTEGER NOT NULL DEFAULT 0,
+    "totalSuppliers" INTEGER NOT NULL DEFAULT 0,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "financial_summaries_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -342,23 +373,6 @@ CREATE TABLE "notifications" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "notifications_pkey" PRIMARY KEY ("id")
-);
-
--- CreateTable
-CREATE TABLE "deliveries" (
-    "id" TEXT NOT NULL,
-    "saleId" TEXT NOT NULL,
-    "driverName" TEXT,
-    "vehicleNo" TEXT,
-    "address" TEXT NOT NULL,
-    "status" "DeliveryStatus" NOT NULL DEFAULT 'PENDING',
-    "scheduledDate" TIMESTAMP(3),
-    "deliveredAt" TIMESTAMP(3),
-    "notes" TEXT,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "deliveries_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -469,10 +483,19 @@ CREATE INDEX "damage_items_productId_idx" ON "damage_items"("productId");
 CREATE INDEX "stock_adjustments_productId_idx" ON "stock_adjustments"("productId");
 
 -- CreateIndex
+CREATE INDEX "stock_adjustments_createdAt_idx" ON "stock_adjustments"("createdAt");
+
+-- CreateIndex
 CREATE INDEX "stock_movements_productId_createdAt_idx" ON "stock_movements"("productId", "createdAt");
 
 -- CreateIndex
 CREATE INDEX "stock_movements_referenceType_referenceId_idx" ON "stock_movements"("referenceType", "referenceId");
+
+-- CreateIndex
+CREATE INDEX "financial_summaries_year_month_idx" ON "financial_summaries"("year", "month");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "financial_summaries_month_year_key" ON "financial_summaries"("month", "year");
 
 -- CreateIndex
 CREATE INDEX "expenses_expenseDate_idx" ON "expenses"("expenseDate");
@@ -491,9 +514,6 @@ CREATE INDEX "payments_customerId_idx" ON "payments"("customerId");
 
 -- CreateIndex
 CREATE INDEX "notifications_userId_isRead_idx" ON "notifications"("userId", "isRead");
-
--- CreateIndex
-CREATE UNIQUE INDEX "deliveries_saleId_key" ON "deliveries"("saleId");
 
 -- CreateIndex
 CREATE INDEX "activity_logs_module_createdAt_idx" ON "activity_logs"("module", "createdAt");
@@ -593,9 +613,6 @@ ALTER TABLE "payments" ADD CONSTRAINT "payments_customerId_fkey" FOREIGN KEY ("c
 
 -- AddForeignKey
 ALTER TABLE "notifications" ADD CONSTRAINT "notifications_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "deliveries" ADD CONSTRAINT "deliveries_saleId_fkey" FOREIGN KEY ("saleId") REFERENCES "sales"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "activity_logs" ADD CONSTRAINT "activity_logs_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE SET NULL ON UPDATE CASCADE;

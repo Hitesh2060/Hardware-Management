@@ -1,202 +1,220 @@
 import prisma from '../config/database.js';
 import ApiError from '../utils/ApiError.js';
+import { Prisma } from '@prisma/client';
 
-/**
- * Get complete supplier ledger with all transactions
- */
-export async function getSupplierLedger(supplierId, { from, to } = {}) {
-  // Check if supplier exists
-  const supplier = await prisma.supplier.findUnique({
-    where: { id: supplierId },
-  });
-  if (!supplier) throw ApiError.notFound('Supplier not found');
+// ============================================
+// 1. LEDGER TABLE OPERATIONS
+// ============================================
 
-  // Get all purchases (debits - what you owe)
-  const purchases = await prisma.purchase.findMany({
-    where: {
-      supplierId,
-      status: { not: 'CANCELLED' },
-      ...(from || to ? { purchaseDate: { gte: from, lte: to } } : {}),
-    },
-    orderBy: { purchaseDate: 'asc' },
-    include: { items: true },
-  });
-
-  // Get all payments made to supplier (credits - what you paid)
-  const payments = await prisma.payment.findMany({
-    where: {
-      supplierId,
-      direction: 'OUT',
-      ...(from || to ? { paidAt: { gte: from, lte: to } } : {}),
-    },
-    orderBy: { paidAt: 'asc' },
-  });
-
-  // Build ledger entries
-  const ledgerEntries = [];
-  let runningBalance = Number(supplier.openingBalance) || 0;
-
-  // Add opening balance
-  if (runningBalance > 0) {
-    ledgerEntries.push({
-      date: supplier.createdAt,
-      type: 'OPENING',
-      reference: 'Opening Balance',
-      debit: 0,
-      credit: 0,
-      balance: runningBalance,
-      note: `Opening balance: Rs. ${runningBalance}`,
+export async function recordCustomerLedger({
+  customerId,
+  transactionType,
+  date,
+  saleId = null,
+  paymentId = null,
+  returnId = null,
+  debit = 0,
+  credit = 0,
+  referenceNo,
+  note = null,
+  createdBy = null,
+}) {
+  try {
+    return await prisma.customerLedger.create({
+      data: {
+        customerId,
+        transactionType,
+        date: new Date(date),
+        saleId,
+        paymentId,
+        returnId,
+        debit,
+        credit,
+        referenceNo,
+        note,
+        createdBy,
+      },
     });
-  }
-
-  // Add purchases
-  for (const purchase of purchases) {
-    runningBalance += Number(purchase.totalAmount);
-    ledgerEntries.push({
-      date: purchase.purchaseDate,
-      type: 'PURCHASE',
-      reference: purchase.invoiceNo,
-      debit: Number(purchase.totalAmount),
-      credit: 0,
-      balance: runningBalance,
-      note: `Purchase #${purchase.invoiceNo}`,
+  } catch (err) {
+    // Log the error with details
+    console.error('❌ Ledger creation failed:', {
+      error: err.message,
+      code: err.code,
+      meta: err.meta,
+      customerId,
+      saleId,
+      transactionType,
     });
+    
+    if (err.code === 'P2002') {
+      throw ApiError.badRequest(
+        `This transaction (${referenceNo}) has already been posted to the customer ledger`
+      );
+    }
+    
+    throw err;
   }
-
-  // Add payments
-  for (const payment of payments) {
-    runningBalance -= Number(payment.amount);
-    ledgerEntries.push({
-      date: payment.paidAt,
-      type: 'PAYMENT',
-      reference: payment.id,
-      debit: 0,
-      credit: Number(payment.amount),
-      balance: runningBalance,
-      note: `Payment - ${payment.method}`,
+}
+export async function recordSupplierLedger({
+  supplierId,
+  transactionType,
+  date,
+  purchaseId = null,
+  paymentId = null,
+  returnId = null,
+  debit = 0,
+  credit = 0,
+  referenceNo,
+  note = null,
+  createdBy = null,
+}) {
+  try {
+    return await prisma.supplierLedger.create({
+      data: {
+        supplierId,
+        transactionType,
+        date: new Date(date),
+        purchaseId,
+        paymentId,
+        returnId,
+        debit,
+        credit,
+        referenceNo,
+        note,
+        createdBy,
+      },
     });
+  } catch (err) {
+    if (err.code === 'P2002') {
+      throw ApiError.badRequest(
+        `This transaction (${referenceNo}) has already been posted to the supplier ledger`
+      );
+    }
+    throw err;
   }
-
-  // Sort by date
-  ledgerEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
-
-  return {
-    supplier: {
-      id: supplier.id,
-      name: supplier.name,
-      phone: supplier.phone,
-      email: supplier.email,
-    },
-    summary: {
-      openingBalance: Number(supplier.openingBalance) || 0,
-      totalPurchases: purchases.reduce((sum, p) => sum + Number(p.totalAmount), 0),
-      totalPayments: payments.reduce((sum, p) => sum + Number(p.amount), 0),
-      outstandingBalance: runningBalance,
-    },
-    entries: ledgerEntries,
-  };
 }
 
+// ============================================
+// 2. CUSTOMER LEDGER
+// ============================================
 /**
- * Get supplier transaction summary (for dashboard)
+ * Calculate aging breakdown for a customer
  */
-export async function getSupplierSummary(supplierId) {
-  const [purchases, payments] = await Promise.all([
-    prisma.purchase.aggregate({
-      where: { supplierId, status: 'RECEIVED' },
-      _sum: { totalAmount: true, paidAmount: true, dueAmount: true },
-    }),
-    prisma.payment.aggregate({
-      where: { supplierId, direction: 'OUT' },
-      _sum: { amount: true },
-    }),
-  ]);
-
-  const supplier = await prisma.supplier.findUnique({
-    where: { id: supplierId },
-  });
-
-  return {
-    supplierName: supplier?.name,
-    totalPurchases: purchases._sum.totalAmount || 0,
-    totalPaid: payments._sum.amount || 0,
-    totalDue: purchases._sum.dueAmount || 0,
-    openingBalance: supplier?.openingBalance || 0,
+export function calculateAging(transactions) {
+  const now = new Date();
+  const aging = {
+    current: 0,      // 0-30 days
+    overdue30: 0,    // 31-60 days
+    overdue60: 0,    // 61-90 days
+    overdue90: 0,    // 90+ days
   };
+
+  for (const tx of transactions) {
+    if (tx.transactionType === 'SALE' && tx.dueAmount > 0) {
+      const daysDiff = Math.floor((now - new Date(tx.date)) / (1000 * 60 * 60 * 24));
+      
+      if (daysDiff <= 30) aging.current += Number(tx.dueAmount);
+      else if (daysDiff <= 60) aging.overdue30 += Number(tx.dueAmount);
+      else if (daysDiff <= 90) aging.overdue60 += Number(tx.dueAmount);
+      else aging.overdue90 += Number(tx.dueAmount);
+    }
+  }
+
+  return aging;
 }
 
-export async function getCustomerLedger(customerId, { from, to } = {}) {
-  const customer = await prisma.customer.findUnique({
-    where: { id: customerId },
-  });
+export async function getCustomerLedger(customerId, { page = 1, limit = 50, from, to }) {
+  const customer = await prisma.customer.findUnique({ where: { id: customerId } });
   if (!customer) throw ApiError.notFound('Customer not found');
 
-  // Get all sales (debits - what customer owes)
+  const parsedPage = Math.max(1, parseInt(String(page)) || 1);
+  const parsedLimit = Math.min(100, Math.max(1, parseInt(String(limit)) || 50));
+  const skip = (parsedPage - 1) * parsedLimit;
+
+  // Get entries with pagination
+  const entries = await prisma.customerLedger.findMany({
+    where: {
+      customerId,
+      ...(from ? { date: { gte: new Date(from) } } : {}),
+      ...(to ? { date: { lte: new Date(to) } } : {}),
+    },
+    orderBy: { date: 'desc' },
+    skip: skip,
+    take: parsedLimit,
+  });
+
+  // Get all entries for running balance calculation
+  const allEntries = await prisma.customerLedger.findMany({
+    where: { customerId },
+    orderBy: { date: 'asc' },
+    select: { id: true, debit: true, credit: true, transactionType: true, date: true },
+  });
+
+  let runningBalance = 0;
+  let openingBalance = 0;
+  const balanceMap = new Map();
+
+  for (const entry of allEntries) {
+    runningBalance += Number(entry.debit) - Number(entry.credit);
+    balanceMap.set(entry.id, runningBalance);
+    
+    if (entry.transactionType === 'OPENING_BALANCE') {
+      openingBalance = Number(entry.debit) || 0;
+    }
+  }
+
+  const entriesWithBalance = entries.map(entry => {
+    const balance = balanceMap.get(entry.id) || 0;
+    return {
+      ...entry,
+      runningBalance: balance,
+      debit: Number(entry.debit),
+      credit: Number(entry.credit),
+      // Determine transaction direction for styling
+      direction: entry.debit > 0 ? 'debit' : (entry.credit > 0 ? 'credit' : 'neutral'),
+      // Format date with time
+      formattedDate: new Date(entry.date).toLocaleString('en-IN', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+  });
+
+  const total = await prisma.customerLedger.count({
+    where: {
+      customerId,
+      ...(from ? { date: { gte: new Date(from) } } : {}),
+      ...(to ? { date: { lte: new Date(to) } } : {}),
+    },
+  });
+
+  const balanceResult = await prisma.customerLedger.aggregate({
+    where: { customerId },
+    _sum: {
+      debit: true,
+      credit: true,
+    },
+  });
+
+  const totalDebit = balanceResult._sum.debit || 0;
+  const totalCredit = balanceResult._sum.credit || 0;
+  const currentBalance = totalDebit - totalCredit;
+
+  // Get sales for aging calculation
   const sales = await prisma.sale.findMany({
-    where: {
-      customerId,
-      status: { not: 'CANCELLED' },
-      ...(from || to ? { saleDate: { gte: from, lte: to } } : {}),
+    where: { 
+      customerId, 
+      status: 'COMPLETED',
+      dueAmount: { gt: 0 }
     },
-    orderBy: { saleDate: 'asc' },
-    include: { items: true },
+    select: { dueAmount: true, saleDate: true },
   });
 
-  // Get all payments received from customer (credits - what customer paid)
-  const payments = await prisma.payment.findMany({
-    where: {
-      customerId,
-      direction: 'IN',
-      ...(from || to ? { paidAt: { gte: from, lte: to } } : {}),
-    },
-    orderBy: { paidAt: 'asc' },
-  });
-
-  const ledgerEntries = [];
-  let runningBalance = Number(customer.openingBalance) || 0;
-
-  // Opening balance (if any)
-  if (runningBalance > 0) {
-    ledgerEntries.push({
-      date: customer.createdAt,
-      type: 'OPENING',
-      reference: 'Opening Balance',
-      debit: 0,
-      credit: 0,
-      balance: runningBalance,
-      note: `Opening balance: Rs. ${runningBalance}`,
-    });
-  }
-
-  // Add sales (customer owes money -> debit increases)
-  for (const sale of sales) {
-    runningBalance += Number(sale.totalAmount);
-    ledgerEntries.push({
-      date: sale.saleDate,
-      type: 'SALE',
-      reference: sale.invoiceNo,
-      debit: Number(sale.totalAmount),
-      credit: 0,
-      balance: runningBalance,
-      note: `Sale #${sale.invoiceNo}`,
-    });
-  }
-
-  // Add payments received (customer pays -> credit decreases balance)
-  for (const payment of payments) {
-    runningBalance -= Number(payment.amount);
-    ledgerEntries.push({
-      date: payment.paidAt,
-      type: 'PAYMENT_RECEIVED',
-      reference: payment.id,
-      debit: 0,
-      credit: Number(payment.amount),
-      balance: runningBalance,
-      note: `Payment - ${payment.method}`,
-    });
-  }
-
-  ledgerEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
+  // Calculate aging
+  const aging = calculateAging(sales);
 
   return {
     customer: {
@@ -205,37 +223,375 @@ export async function getCustomerLedger(customerId, { from, to } = {}) {
       phone: customer.phone,
       email: customer.email,
     },
-    summary: {
-      openingBalance: Number(customer.openingBalance) || 0,
-      totalSales: sales.reduce((sum, s) => sum + Number(s.totalAmount), 0),
-      totalPaymentsReceived: payments.reduce((sum, p) => sum + Number(p.amount), 0),
-      outstandingBalance: runningBalance,
+    openingBalance: openingBalance || Number(customer.openingBalance) || 0,
+    entries: entriesWithBalance,
+    totalDebit: Number(totalDebit),
+    totalCredit: Number(totalCredit),
+    currentBalance: Number(currentBalance),
+    aging,
+    pagination: {
+      page: parsedPage,
+      limit: parsedLimit,
+      total,
+      totalPages: Math.ceil(total / parsedLimit),
     },
-    entries: ledgerEntries,
   };
 }
 
-export async function getCustomerSummary(customerId) {
-  const [sales, payments] = await Promise.all([
-    prisma.sale.aggregate({
-      where: { customerId, status: 'COMPLETED' },
-      _sum: { totalAmount: true, paidAmount: true, dueAmount: true },
+export async function getCustomerLedgerSummary(customerId) {
+  const [entries, customer] = await Promise.all([
+    prisma.customerLedger.findMany({
+      where: { customerId },
+      orderBy: { date: 'asc' },
     }),
-    prisma.payment.aggregate({
-      where: { customerId, direction: 'IN' },
-      _sum: { amount: true },
+    prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { name: true, phone: true, email: true },
     }),
   ]);
 
-  const customer = await prisma.customer.findUnique({
-    where: { id: customerId },
-  });
+  if (!customer) throw ApiError.notFound('Customer not found');
+
+  const totalDebit = entries.reduce((sum, e) => sum + Number(e.debit), 0);
+  const totalCredit = entries.reduce((sum, e) => sum + Number(e.credit), 0);
+  const balance = totalDebit - totalCredit;
 
   return {
-    customerName: customer?.name,
-    totalSales: sales._sum.totalAmount || 0,
-    totalPaid: payments._sum.amount || 0,
-    totalDue: sales._sum.dueAmount || 0,
-    openingBalance: customer?.openingBalance || 0,
+    customer,
+    totalDebit,
+    totalCredit,
+    balance,
+    transactionCount: entries.length,
+  };
+}
+
+// ============================================
+// 3. SUPPLIER LEDGER
+// ============================================
+
+export async function getSupplierLedger(supplierId, { page = 1, limit = 50, from, to }) {
+  const supplier = await prisma.supplier.findUnique({ where: { id: supplierId } });
+  if (!supplier) throw ApiError.notFound('Supplier not found');
+
+  const parsedPage = Math.max(1, parseInt(String(page)) || 1);
+  const parsedLimit = Math.min(100, Math.max(1, parseInt(String(limit)) || 50));
+  const skip = (parsedPage - 1) * parsedLimit;
+
+  // ✅ Get entries with pagination using findMany (same as customer)
+  const entries = await prisma.supplierLedger.findMany({
+    where: {
+      supplierId,
+      ...(from ? { date: { gte: new Date(from) } } : {}),
+      ...(to ? { date: { lte: new Date(to) } } : {}),
+    },
+    orderBy: { date: 'desc' },
+    skip: skip,
+    take: parsedLimit,
+  });
+
+  // ✅ Get all entries for running balance calculation
+  const allEntries = await prisma.supplierLedger.findMany({
+    where: { supplierId },
+    orderBy: { date: 'asc' },
+    select: { id: true, debit: true, credit: true, transactionType: true, date: true },
+  });
+
+  let runningBalance = 0;
+  let openingBalance = 0;
+  const balanceMap = new Map();
+
+  for (const entry of allEntries) {
+    runningBalance += Number(entry.debit) - Number(entry.credit);
+    balanceMap.set(entry.id, runningBalance);
+    
+    if (entry.transactionType === 'OPENING_BALANCE') {
+      openingBalance = Number(entry.debit) || 0;
+    }
+  }
+
+  const entriesWithBalance = entries.map(entry => {
+    const balance = balanceMap.get(entry.id) || 0;
+    return {
+      ...entry,
+      runningBalance: balance,
+      debit: Number(entry.debit),
+      credit: Number(entry.credit),
+      direction: entry.debit > 0 ? 'debit' : (entry.credit > 0 ? 'credit' : 'neutral'),
+      formattedDate: new Date(entry.date).toLocaleString('en-IN', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    };
+  });
+
+  const total = await prisma.supplierLedger.count({
+    where: {
+      supplierId,
+      ...(from ? { date: { gte: new Date(from) } } : {}),
+      ...(to ? { date: { lte: new Date(to) } } : {}),
+    },
+  });
+
+  const balanceResult = await prisma.supplierLedger.aggregate({
+    where: { supplierId },
+    _sum: {
+      debit: true,
+      credit: true,
+    },
+  });
+
+  const totalDebit = balanceResult._sum.debit || 0;
+  const totalCredit = balanceResult._sum.credit || 0;
+  const currentBalance = totalDebit - totalCredit;
+
+  return {
+    supplier: {
+      id: supplier.id,
+      name: supplier.name,
+      phone: supplier.phone,
+      email: supplier.email,
+    },
+    openingBalance: openingBalance || Number(supplier.openingBalance) || 0,
+    entries: entriesWithBalance,
+    totalDebit: Number(totalDebit),
+    totalCredit: Number(totalCredit),
+    currentBalance: Number(currentBalance),
+    pagination: {
+      page: parsedPage,
+      limit: parsedLimit,
+      total,
+      totalPages: Math.ceil(total / parsedLimit),
+    },
+  };
+}
+
+export async function getSupplierLedgerSummary(supplierId) {
+  const [entries, supplier] = await Promise.all([
+    prisma.supplierLedger.findMany({
+      where: { supplierId },
+      orderBy: { date: 'asc' },
+    }),
+    prisma.supplier.findUnique({
+      where: { id: supplierId },
+      select: { name: true, phone: true, email: true },
+    }),
+  ]);
+
+  if (!supplier) throw ApiError.notFound('Supplier not found');
+
+  const totalDebit = entries.reduce((sum, e) => sum + Number(e.debit), 0);
+  const totalCredit = entries.reduce((sum, e) => sum + Number(e.credit), 0);
+  const balance = totalDebit - totalCredit;
+
+  return {
+    supplier,
+    totalDebit,
+    totalCredit,
+    balance,
+    transactionCount: entries.length,
+  };
+}
+
+// ============================================
+// 4. REBUILD LEDGER
+// ============================================
+
+export async function rebuildCustomerLedger(customerId) {
+  const customer = await prisma.customer.findUnique({ where: { id: customerId } });
+  if (!customer) throw ApiError.notFound('Customer not found');
+
+  const sales = await prisma.sale.findMany({
+    where: { customerId, status: 'COMPLETED' },
+    orderBy: { saleDate: 'asc' },
+    select: { id: true, saleDate: true, totalAmount: true, invoiceNo: true },
+  });
+
+  const payments = await prisma.payment.findMany({
+    where: { customerId, direction: 'IN' },
+    orderBy: { paidAt: 'asc' },
+    select: { id: true, paidAt: true, amount: true },
+  });
+
+  const entries = [];
+
+  const opening = Number(customer.openingBalance) || 0;
+  if (opening !== 0) {
+    entries.push({
+      customerId,
+      transactionType: 'OPENING_BALANCE',
+      date: customer.createdAt,
+      saleId: null,
+      paymentId: null,
+      returnId: null,
+      debit: opening > 0 ? opening : 0,
+      credit: opening < 0 ? Math.abs(opening) : 0,
+      referenceNo: `OPENING-${customerId}`,
+      note: 'Opening balance',
+      createdBy: null,
+    });
+  }
+
+  for (const sale of sales) {
+    entries.push({
+      customerId,
+      transactionType: 'SALE',
+      date: sale.saleDate,
+      saleId: sale.id,
+      paymentId: null,
+      returnId: null,
+      debit: Number(sale.totalAmount),
+      credit: 0,
+      referenceNo: sale.invoiceNo,
+      note: `Sale #${sale.invoiceNo}`,
+      createdBy: null,
+    });
+  }
+  const totalPayments = await prisma.payment.count({
+    where: { direction: 'IN' },
+  });
+
+  let paymentCounter = totalPayments - payments.length + 1;
+
+  for (const payment of payments) {
+    const year = new Date(payment.paidAt).getFullYear();
+   
+    const receiptNo = `RCPT-${year}-${paymentCounter}`;
+    
+    entries.push({
+      customerId,
+      transactionType: 'PAYMENT',
+      date: payment.paidAt,
+      saleId: null,
+      paymentId: payment.id,
+      returnId: null,
+      debit: 0,
+      credit: Number(payment.amount),
+      referenceNo: receiptNo,
+      note: 'Payment received',
+      createdBy: null,
+    });
+    
+    paymentCounter++;
+  }
+
+  await prisma.$transaction([
+    prisma.customerLedger.deleteMany({ where: { customerId } }),
+    ...(entries.length
+      ? [
+          prisma.customerLedger.createMany({
+            data: entries.map((e) => ({ ...e, date: new Date(e.date) })),
+          }),
+        ]
+      : []),
+  ]);
+
+  return {
+    success: true,
+    sales: sales.length,
+    payments: payments.length,
+    openingBalanceApplied: opening !== 0,
+    totalEntries: entries.length,
+  };
+}
+
+export async function rebuildSupplierLedger(supplierId) {
+  const supplier = await prisma.supplier.findUnique({ where: { id: supplierId } });
+  if (!supplier) throw ApiError.notFound('Supplier not found');
+
+  const purchases = await prisma.purchase.findMany({
+    where: { supplierId, status: 'RECEIVED' },
+    orderBy: { purchaseDate: 'asc' },
+    select: { id: true, purchaseDate: true, totalAmount: true, invoiceNo: true },
+  });
+
+  const payments = await prisma.payment.findMany({
+    where: { supplierId, direction: 'OUT' },
+    orderBy: { paidAt: 'asc' },
+    select: { id: true, paidAt: true, amount: true },
+  });
+
+  const entries = [];
+
+  const opening = Number(supplier.openingBalance) || 0;
+  if (opening !== 0) {
+    entries.push({
+      supplierId,
+      transactionType: 'OPENING_BALANCE',
+      date: supplier.createdAt,
+      purchaseId: null,
+      paymentId: null,
+      returnId: null,
+      debit: opening > 0 ? opening : 0,
+      credit: opening < 0 ? Math.abs(opening) : 0,
+      referenceNo: `OPENING-${supplierId}`,
+      note: 'Opening balance',
+      createdBy: null,
+    });
+  }
+
+  for (const purchase of purchases) {
+    entries.push({
+      supplierId,
+      transactionType: 'PURCHASE',
+      date: purchase.purchaseDate,
+      purchaseId: purchase.id,
+      paymentId: null,
+      returnId: null,
+      debit: Number(purchase.totalAmount),
+      credit: 0,
+      referenceNo: purchase.invoiceNo,
+      note: `Purchase #${purchase.invoiceNo}`,
+      createdBy: null,
+    });
+  }
+
+ 
+  const totalPayments = await prisma.payment.count({
+    where: { direction: 'OUT' },
+  });
+
+  let paymentCounter = totalPayments - payments.length + 1;
+
+  for (const payment of payments) {
+    const year = new Date(payment.paidAt).getFullYear();
+    const receiptNo = `RCPT-${year}-${paymentCounter}`;
+    
+    entries.push({
+      supplierId,
+      transactionType: 'PAYMENT',
+      date: payment.paidAt,
+      purchaseId: null,
+      paymentId: payment.id,
+      returnId: null,
+      debit: 0,
+      credit: Number(payment.amount),
+      referenceNo: receiptNo,
+      note: 'Payment made',
+      createdBy: null,
+    });
+    
+    paymentCounter++;
+  }
+
+  await prisma.$transaction([
+    prisma.supplierLedger.deleteMany({ where: { supplierId } }),
+    ...(entries.length
+      ? [
+          prisma.supplierLedger.createMany({
+            data: entries.map((e) => ({ ...e, date: new Date(e.date) })),
+          }),
+        ]
+      : []),
+  ]);
+
+  return {
+    success: true,
+    purchases: purchases.length,
+    payments: payments.length,
+    openingBalanceApplied: opening !== 0,
+    totalEntries: entries.length,
   };
 }

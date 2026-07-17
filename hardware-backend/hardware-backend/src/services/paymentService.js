@@ -1,5 +1,7 @@
 import prisma from '../config/database.js';
 import ApiError from '../utils/ApiError.js';
+import { recordCustomerLedger, recordSupplierLedger } from './ledgerService.js';
+import { generateReceiptNumber } from '../utils/generateReceiptNumber.js';
 
 /**
  * Records a payment AGAINST an existing due balance (customer paying off
@@ -25,9 +27,37 @@ export async function recordCustomerPayment({ customerId, saleId, amount, method
       });
     }
 
-    return tx.payment.create({
-      data: { direction: 'IN', method, amount, saleId, customerId, note, paidAt: new Date() },
+    // ✅ Generate human-readable receipt number
+    const receiptNo = await generateReceiptNumber(tx, 'RCPT');
+
+    const payment = await tx.payment.create({
+      data: { 
+        direction: 'IN', 
+        method, 
+        amount, 
+        saleId, 
+        customerId, 
+        note, 
+        paidAt: new Date() 
+      },
     });
+
+    // ✅ Use receipt number as referenceNo instead of payment.id
+    await recordCustomerLedger({
+      customerId: customerId,
+      transactionType: 'PAYMENT',
+      date: payment.paidAt,
+      saleId: saleId || null,
+      paymentId: payment.id,
+      returnId: null,
+      debit: 0,
+      credit: Number(amount),
+      referenceNo: receiptNo,  // ← Human-readable!
+      note: `Payment received - ${method}`,
+      createdBy: null,
+    });
+
+    return payment;
   });
 }
 
@@ -48,9 +78,37 @@ export async function recordSupplierPayment({ supplierId, purchaseId, amount, me
       });
     }
 
-    return tx.payment.create({
-      data: { direction: 'OUT', method, amount, purchaseId, supplierId, note, paidAt: new Date() },
+    // ✅ Generate human-readable receipt number
+    const receiptNo = await generateReceiptNumber(tx, 'RCPT');
+
+    const payment = await tx.payment.create({
+      data: { 
+        direction: 'OUT', 
+        method, 
+        amount, 
+        purchaseId, 
+        supplierId, 
+        note, 
+        paidAt: new Date() 
+      },
     });
+
+    // ✅ Use receipt number as referenceNo
+    await recordSupplierLedger({
+      supplierId: supplierId,
+      transactionType: 'PAYMENT',
+      date: payment.paidAt,
+      purchaseId: purchaseId || null,
+      paymentId: payment.id,
+      returnId: null,
+      debit: 0,
+      credit: Number(amount),
+      referenceNo: receiptNo,  // ← Human-readable!
+      note: `Payment made - ${method}`,
+      createdBy: null,
+    });
+
+    return payment;
   });
 }
 
@@ -86,4 +144,19 @@ export async function listPayments({ direction, customerId, supplierId, page = 1
       totalPages: Math.ceil(total / parsedLimit) 
     } 
   };
+}
+
+export async function getPayment(id) {
+  const payment = await prisma.payment.findUnique({
+    where: { id },
+    include: { 
+      customer: { select: { id: true, name: true, phone: true, email: true } },
+      supplier: { select: { id: true, name: true, phone: true, email: true } },
+      sale: { select: { id: true, invoiceNo: true } },
+      purchase: { select: { id: true, invoiceNo: true } },
+    },
+  });
+  
+  if (!payment) throw ApiError.notFound('Payment not found');
+  return payment;
 }

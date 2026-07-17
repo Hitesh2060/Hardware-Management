@@ -12,7 +12,6 @@ import rawMaterialRoutes from './rawMaterialRoutes.js';
 import purchaseOrderRoutes from './purchaseOrderRoutes.js';
 import customerRoutes from './customerRoutes.js';
 import salesOrderRoutes from './salesOrderRoutes.js';
-import deliveryRoutes from './deliveryRoutes.js';
 import stockRoutes from './stockRoutes.js';
 import stockAdjustmentRoutes from './stockAdjustmentRoutes.js';
 import creditRoutes from './creditRoutes.js';
@@ -25,6 +24,7 @@ import staffPerformanceRoutes from './staffPerformanceRoutes.js';
 import productionRoutes from './productionRoutes.js';
 import activityLogRoutes from './activityLogRoutes.js';
 import ledgerRoutes from './ledgerRoutes.js';
+import financialReportRoutes from './financialReportRoutes.js';
 
 const router = Router();
 
@@ -42,7 +42,7 @@ router.use('/raw-materials', rawMaterialRoutes); // placeholder — see rawMater
 router.use('/purchase-orders', purchaseOrderRoutes);
 router.use('/customers', customerRoutes);
 router.use('/sales-orders', salesOrderRoutes);
-router.use('/deliveries', deliveryRoutes);
+
 router.use('/stock', stockRoutes);
 router.use('/stock-adjustments', stockAdjustmentRoutes);
 router.use('/credit', creditRoutes);
@@ -55,5 +55,6 @@ router.use('/staff-performance', staffPerformanceRoutes);
 router.use('/production', productionRoutes); // placeholder — see productionController.js
 router.use('/activity-logs', activityLogRoutes);
 router.use('/ledger', ledgerRoutes);
+router.use('/financial-reports', financialReportRoutes);
 
 export default router;

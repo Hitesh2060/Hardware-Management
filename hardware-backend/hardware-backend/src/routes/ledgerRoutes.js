@@ -6,17 +6,9 @@ import { requirePermission } from '../middleware/roleCheck.js';
 const router = Router();
 router.use(authenticate);
 
-router.get(
-  '/supplier/:supplierId/ledger',
-  requirePermission('report.view'),
-  controller.getSupplierLedger
-);
-
-router.get(
-  '/supplier/:supplierId/summary',
-  requirePermission('report.view'),
-  controller.getSupplierSummary
-);
+// ============================================
+// CUSTOMER LEDGER
+// ============================================
 
 router.get(
   '/customer/:customerId/ledger',
@@ -27,7 +19,35 @@ router.get(
 router.get(
   '/customer/:customerId/summary',
   requirePermission('report.view'),
-  controller.getCustomerSummary
+  controller.getCustomerLedgerSummary
+);
+
+router.post(
+  '/customer/:customerId/rebuild',
+  requirePermission('user.create'),
+  controller.rebuildCustomerLedger
+);
+
+// ============================================
+// SUPPLIER LEDGER
+// ============================================
+
+router.get(
+  '/supplier/:supplierId/ledger',
+  requirePermission('report.view'),
+  controller.getSupplierLedger
+);
+
+router.get(
+  '/supplier/:supplierId/summary',
+  requirePermission('report.view'),
+  controller.getSupplierLedgerSummary
+);
+
+router.post(
+  '/supplier/:supplierId/rebuild',
+  requirePermission('user.create'),
+  controller.rebuildSupplierLedger
 );
 
 export default router;

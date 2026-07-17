@@ -2,8 +2,8 @@ import prisma from '../config/database.js';
 import ApiError from '../utils/ApiError.js';
 import { applySaleStock, applyCancellationReversal } from './stockService.js';
 import { generateDocumentNumber } from '../utils/generateInvoiceNo.js';
+import { recordCustomerLedger } from './ledgerService.js';
 
-// Increase transaction timeout to 30 seconds
 const TRANSACTION_TIMEOUT = 30000;
 
 export async function createSale(payload, userId) {
@@ -20,7 +20,6 @@ export async function createSale(payload, userId) {
     let taxAmount = 0;
     const lineData = [];
 
-    // First, get all products in one query for efficiency
     const productIds = items.map(item => item.productId);
     const products = await tx.product.findMany({
       where: { id: { in: productIds }, isActive: true },
@@ -55,7 +54,6 @@ export async function createSale(payload, userId) {
       throw ApiError.badRequest('Paid amount cannot exceed total amount');
     }
 
-    // Credit limit check — only relevant when the sale isn't fully paid.
     if (dueAmount > 0) {
       if (!customer) {
         throw ApiError.badRequest('A customer must be selected for credit/partial sales');
@@ -72,10 +70,10 @@ export async function createSale(payload, userId) {
 
     const invoiceNo = await generateDocumentNumber(tx, 'sale', 'INV');
 
-    // Ensure paymentMode is a valid enum value
     const validPaymentModes = ['CASH', 'CREDIT', 'PARTIAL', 'CARD', 'BANK_TRANSFER', 'MOBILE_WALLET'];
     const safePaymentMode = validPaymentModes.includes(paymentMode) ? paymentMode : 'CASH';
 
+    // ✅ STEP 1: Create the sale
     const sale = await tx.sale.create({
       data: {
         invoiceNo,
@@ -94,7 +92,9 @@ export async function createSale(payload, userId) {
       include: { items: true },
     });
 
-    // --- stock OUT for every line — throws ApiError.badRequest if insufficient ---
+    console.log('✅ Sale created with ID:', sale.id); // Debug log
+
+    // ✅ STEP 2: Update stock
     for (const item of lineData) {
       await applySaleStock(tx, {
         productId: item.productId,
@@ -104,15 +104,47 @@ export async function createSale(payload, userId) {
       });
     }
 
+    // ✅ STEP 3: Record customer ledger entry (ONLY if customer exists AND sale exists)
+    if (customerId && sale && sale.id) {
+      try {
+        // Double-check that the sale exists in the database
+        const saleExists = await tx.sale.findUnique({
+          where: { id: sale.id },
+          select: { id: true },
+        });
+
+        if (saleExists) {
+          await recordCustomerLedger({
+            customerId: customerId,
+            transactionType: 'SALE',
+            date: sale.saleDate,
+            saleId: sale.id,
+            paymentId: null,
+            returnId: null,
+            debit: Number(sale.totalAmount),
+            credit: 0,
+            referenceNo: sale.invoiceNo,
+            note: `Sale #${sale.invoiceNo}`,
+            createdBy: userId,
+          });
+          console.log('✅ Customer ledger entry created for sale:', sale.id);
+        } else {
+          console.warn('⚠️ Sale not found when creating ledger entry');
+        }
+      } catch (ledgerError) {
+        console.error('❌ Failed to create ledger entry:', ledgerError.message);
+        // Don't throw - let the sale complete even if ledger fails
+      }
+    } else {
+      console.log('ℹ️ Skipping ledger entry - no customer selected');
+    }
+
+    // ✅ STEP 4: Create payment (if any)
     if (paidAmount > 0) {
-      // Map paymentMode to valid PaymentMethod
       let paymentMethod = 'CASH';
       const validPaymentMethods = ['CASH', 'CARD', 'BANK_TRANSFER', 'MOBILE_WALLET', 'CHEQUE'];
       if (validPaymentMethods.includes(paymentMode)) {
         paymentMethod = paymentMode;
-      } else {
-        // For CREDIT, PARTIAL, or any other value, default to CASH
-        paymentMethod = 'CASH';
       }
 
       await tx.payment.create({
